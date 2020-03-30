@@ -42,7 +42,8 @@ ifneq ($(KERNELRELEASE),)
 	dm-mirror_sync-objs += $(DMOBJS)
 
 # Otherwise we were called directly from the command
-# line; invoke the kernel build system.
+# line; invoke the kernel build system, for example:
+#KERNEL_VERSION=4.9.63-29.el6.x86_64 make KERNELDIR=/mnt/build/linux-4.9.63-29.el6.x86_64/
 else
 	#KERNELDIR ?= $(BASEKERNDIR)/lib/modules/$(shell uname -r)/build
 	KERNELDIR ?= $(BASEKERNDIR)/lib/modules/$(KERNEL_VERSION)/build
@@ -50,17 +51,8 @@ else
 	#SUBDIRS=$(PWD)/kern_code
 endif
 
-# Need special flags for Centos7 (el7), kernel code is different from el6
-ifeq ($(shell echo '$(KERNEL_VERSION)' | grep el7 | grep -v 3.10.0-327 | wc -l), 1)
-EXTRA_CFLAGS += -DCENTOS7
-endif
-
-.PHONY: all kern38vm dms_mod ins lsm rmm test install clean wc
+.PHONY: all dms_mod ins lsm rmm test install clean wc
 all: dms_mod # tags types.vim
-
-kern38vm: KERNELDIR = /mnt/kernel/linux-3.8.5/
-kern38vm: all
-
 
 dms_mod:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules

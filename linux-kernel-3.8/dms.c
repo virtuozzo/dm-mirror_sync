@@ -1,24 +1,9 @@
-/**
- * Device mapper synchronous mirroring driver code.
+/*
+ * Device mapper synchronous mirroring driver.
  *
- * Copyright (C) 2012-2016 OnApp Ltd.
+ * Author: (C) 2012 by Michail Flouris <michail.flouris@onapp.com>
  *
- * Author: Michail Flouris <michail.flouris@onapp.com>
- *
- * This file is part of the device mapper synchronous mirror module.
- * 
- * The dm-mirror_sync driver is free software: you can redistribute 
- * it and/or modify it under the terms of the GNU General Public 
- * License as published by the Free Software Foundation, either 
- * version 2 of the License, or (at your option) any later version.
- * 
- * Some open source application is distributed in the hope that it will 
- * be useful, but WITHOUT ANY WARRANTY; without even the implied warranty 
- * of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- * 
- * You should have received a copy of the GNU General Public License
- * along with Foobar.  If not, see <http://www.gnu.org/licenses/>.
+ * This file is released under the GPL.
  */
 
 /* Include some original dm header files */
@@ -357,6 +342,13 @@ static void fail_mirror(struct mirror *m, enum dm_raid1_error error_type)
 	schedule_work(&ms->trigger_event);
 }
 
+/*----------------------------------------------------------------- */
+#if 0
+static int default_ok(struct mirror *m)
+{
+	return !atomic_read(&m->ms->default_mirror->error_count);
+}
+#endif
 /*----------------------------------------------------------------- */
 
 static int mirror_sync_available(struct mirror_sync_set *ms)
@@ -1021,6 +1013,7 @@ dms_sync_block_io(struct block_device *bdev, unsigned long long baddr_bytes,
 	bio->bi_sector = (sector_t) (baddr_bytes >> 9);
 	for (i = 0; i < npages; i++) {
 		int bap;
+		// FIXME FIXME need to read many pages (i.e. one block)!
 		if ( (bap = bio_add_page(bio, pages[i], PAGE_SIZE, 0)) == 0 ) {
 			DMERR("dms_sync_block_io():: bio_add_page() failure [i=%d, bap=%d]...", i, bap);
 			return 0;
@@ -1558,6 +1551,12 @@ static int mirror_sync_message(struct dm_target *ti, unsigned argc, char **argv)
 #endif
 
 			/* ---------------------------------------------------- */
+#if 0
+		} else if ( !strncmp(argv[1], "io_cmd", strlen(argv[1])) ) {
+			/* ---------------------------------------------------- */
+			/* FIXME : add more commands here... */
+			/* ---------------------------------------------------- */
+#endif
 		} else /* unknown command */
 			/* ---------------------------------------------------- */
 			return -EINVAL;
@@ -2204,7 +2203,11 @@ static int mirror_sync_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_flush_bios = 1;
 	ti->num_discard_bios = 1;
 #endif
+#ifdef CENTOS7
+	ti->per_io_data_size = sizeof(struct dms_bio_map_info); // Linux-3.x specific
+#else
 	ti->per_bio_data_size = sizeof(struct dms_bio_map_info); // Linux-3.x specific
+#endif
 	ti->discard_zeroes_data_unsupported = true;
 
 	/* CAUTION: dm_table_get_md() code has changed since 2.6.18! no dm_put() needed after it! */
@@ -2430,6 +2433,9 @@ static struct target_type mirror_sync_target = {
 	.message = mirror_sync_message,	/* Message function */
 	.status	 = mirror_sync_status,	/* Status function */
 	.iterate_devices = mirror_sync_iterate_devices,
+	//  FIXME: NEED these functions in mirror_sync ?? now used only on striping...
+	//.io_hints = mirror_sync_io_hints,
+	//.merge  = destripe_merge,
 };
 
 static int __init dm_mirror_sync_init(void)

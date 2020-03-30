@@ -1,10 +1,7 @@
 #
-# Makefile for the Device mapper mirror_sync (i.e. synchronous mirror) driver.
-#
-# Copyright (C) 2012 OnApp Ltd.
 # Author: (C) 2012 Michail Flouris <michail.flouris@onapp.com>
 
-# Add debugging??
+# Add heavy debugging??
 #DFLAGS = -g -g3 -ggdb
 #EXTRA_CFLAGS += $(DFLAGS)
 
@@ -63,7 +60,11 @@ ifeq ($(CENTOS_VERSION),$(filter $(CENTOS_VERSION),6 7))
 			BUILDDIR := "linux-kernel-3.13"
 		endif
 	else
-		BUILDDIR := "centos6_kernel-2.6.32"
+		ifeq ($(KERN_MAJOR_VER),4)
+			BUILDDIR := "linux-kernel-4.9"
+		else
+			BUILDDIR := "centos6_kernel-2.6.32"
+		endif
 	endif
 endif
 else
@@ -73,13 +74,17 @@ else
 			ifeq ($(shell echo '$(KERN_MINOR_VER) < 13' | bc), 1)
 				BUILDDIR := "linux-kernel-3.8"
 			else
-				BUILDDIR := "linux-kernel-3.13"
+				BUILDDIR ?= "linux-kernel-3.13"
 			endif
 		else
 			BUILDDIR := $(error Ubuntu Kernel version < 3! Change into a 2.x kernel version subdir and 'make' in there!)
 		endif
 	else
-		BUILDDIR := $(error Unsupported linux distro! Change into a kernel version subdir and 'make' in there!)
+		ifeq ($(KERN_MAJOR_VER),4)
+			BUILDDIR := "linux-kernel-4.9"
+		else
+			BUILDDIR := $(error Unsupported linux distro! Change into a kernel version subdir and 'make' in there!)
+		endif
 	endif
 endif
 
@@ -88,11 +93,11 @@ ifeq ($(BUILDDIR),)
 	BUILDDIR := $(error dm-mirror_sync built not supported on current distro/kernel version! Aborting!)
 endif
 
-BINS= nbd_print_debug
+BINS= qhash_test nbd_print_debug
 
-.PHONY: all dms_mod ins lsm rmm test install clean wc utils
+.PHONY: all dms_mod ins lsm rmm test install clean wc utils bench
 
-all: dms_mod utils # tags types.vim
+all: dms_mod utils bench # tags types.vim
 
 dms_mod:
 	@echo Detected LINUX_TYPE=\"${LINUX_TYPE}\"
@@ -102,6 +107,9 @@ dms_mod:
 
 utils::
 	(cd utils ; make $(TARGET))
+
+bench::
+	(cd bench; make $(TARGET))
 
 ins:
 	(cd $(BUILDDIR) ; $(MAKE) $@)
@@ -122,6 +130,7 @@ install:
 clean:
 	(cd $(BUILDDIR) ; $(MAKE) $@)
 	(cd utils ; make $@)
+	(cd bench; make $@)
 	\rm -rf *.o .*.o.d .depend *.ko .*.cmd *.mod.c .tmp* Module.markers Module.symvers
 	\rm -f types.vim tags $(BINS)
 

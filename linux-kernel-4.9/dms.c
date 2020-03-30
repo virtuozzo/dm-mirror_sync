@@ -464,9 +464,10 @@ static void write_callback(unsigned long error, void *context)
 		 * If the bio is discard, return an error, but do not
 		 * degrade the array.
 		 */
-		if (bio->bi_rw & REQ_DISCARD) {
+		if (bio_op(bio) == REQ_OP_DISCARD) {
 			bio_set_m(bio, NULL);
-			bio_endio(bio, -EOPNOTSUPP);
+			bio->bi_error = -EOPNOTSUPP;
+			bio_endio(bio);
 			return;
 		}
 
@@ -494,10 +495,11 @@ static void write_callback(unsigned long error, void *context)
 			DMERR("[%s] All mirror devices dead, failing I/O write", ms->name);
 			atomic_inc( &ms->supress_err_messages );
 		}
+		bio->bi_error = ret;
 	}
 
 	bio_set_m(bio, NULL);
-	bio_endio(bio, ret);
+	bio_endio(bio);
 	DMSDEBUG("write_callback() after endbio()... exiting\n");
 }
 
@@ -513,7 +515,8 @@ static int write_async_bios( struct dms_bio_map_info *bmi, struct bio *bio)
 	struct mirror_sync_set *ms = bmi->bmi_ms;
 	struct dm_io_region io[ms->nr_mirrors], *dest = io;
 	struct dm_io_request io_req = {
-		.bi_rw = WRITE | (bio->bi_rw & WRITE_FLUSH_FUA),
+		.bi_op = REQ_OP_WRITE,
+		.bi_op_flags = bio->bi_opf & WRITE_FLUSH_FUA,
 		.mem.type = DM_IO_BIO,
 		.mem.ptr.bio = bio,
 		.notify.fn = write_callback,
@@ -522,8 +525,8 @@ static int write_async_bios( struct dms_bio_map_info *bmi, struct bio *bio)
 	};
 
 	assert_bug(bmi);
-	if (bio->bi_rw & REQ_DISCARD) {
-		io_req.bi_rw |= REQ_DISCARD;
+	if (bio_op(bio) == REQ_OP_DISCARD) {
+		io_req.bi_op = REQ_OP_DISCARD;
 		io_req.mem.type = DM_IO_KMEM;
 		io_req.mem.ptr.addr = NULL;
 	}
@@ -612,8 +615,9 @@ static void read_callback(unsigned long error, void *context)
 
 	if (unlikely(error)) { /* READ ERROR HANDLING! */
 
+
 		if ((error == -EOPNOTSUPP) ||
-			((error == -EWOULDBLOCK) && (bio->bi_rw & REQ_RAHEAD)) ) {
+			((error == -EWOULDBLOCK) && (bio->bi_opf & REQ_RAHEAD)) ) {
 
 			DMERR("[%s] Mirror device %s: failing I/O Read (Error: %ld)",
 						m->ms->name, m->dev->name, error );
@@ -636,7 +640,8 @@ static void read_callback(unsigned long error, void *context)
 			 * this is debug code to fail all IO on first failure... */
 			DMERR("[%s] Read on device failed... NOT trying different device, aborting!", m->ms->name);
 			bio_set_m(bio, NULL);
-			bio_endio(bio, -EIO);
+			bio->bi_error = -EIO;
+			bio_endio(bio);
 #else
 			/* -------------------------------------------------------
 			 * ...and here we try to deal with failures by using a live mirror */
@@ -651,7 +656,7 @@ static void read_callback(unsigned long error, void *context)
 			bio_push_m_priv(bio, bmi);
 			
 			DMSDEBUG("read_callback (Dev: %s): queueing read IO on thread!\n", m->dev->name );
-			queue_bio(m->ms, bio, bio_rw(bio));
+			queue_bio(m->ms, bio, bio_data_dir(bio));
 			return;
 
 #endif
@@ -669,7 +674,8 @@ static void read_callback(unsigned long error, void *context)
 
 out:
 	bio_set_m(bio, NULL);
-	bio_endio(bio, ret);
+	bio->bi_error = ret;
+	bio_endio(bio);
 	DMSDEBUG("read_callback (Dev: %s): exiting, bio_endio() done!\n", m->dev->name);
 }
 
@@ -681,7 +687,8 @@ static void read_async_bio(struct dms_bio_map_info *bmi, struct bio *bio)
 	struct dm_io_region io;
 	struct mirror *m = bmi->bmi_m;
 	struct dm_io_request io_req = {
-		.bi_rw = READ,
+		.bi_op = REQ_OP_READ,
+		.bi_op_flags = 0,
 		.mem.type = DM_IO_BIO,
 		.mem.ptr.bio = bio,
 		.notify.fn = read_callback,
@@ -711,7 +718,7 @@ static void read_async_bio(struct dms_bio_map_info *bmi, struct bio *bio)
  */
 static int mirror_sync_map(struct dm_target *ti, struct bio *bio)
 {
-	int rw = bio_rw(bio);
+	int rw = bio_data_dir(bio);
 	struct mirror *m;
 	struct mirror_sync_set *ms = ti->private;
 	struct dms_bio_map_info *bmi = dm_per_bio_data(bio, sizeof(struct dms_bio_map_info));
@@ -723,7 +730,7 @@ static int mirror_sync_map(struct dm_target *ti, struct bio *bio)
 	md = dm_table_get_md(ti->table);
 	DMSDEBUG("mirror_sync_map() enter (Dev: %s)...\n", dm_device_name(md));
 #endif
-	if (rw == READA) // read-ahead...
+	if (bio->bi_opf & REQ_RAHEAD) // read-ahead...
 		return -EWOULDBLOCK;
 
 	if (likely(bmi)) {
@@ -833,7 +840,7 @@ static int mirror_sync_end_io(struct dm_target *ti, struct bio *bio, int error)
 	 */
 
 	/* Update our pending I/O counters... */
-	if ( bio_rw(bio) == WRITE)
+	if ( bio_data_dir(bio) == WRITE)
 	   	atomic_dec( &ms->write_ios_pending );
 	else
 		atomic_dec( &ms->read_ios_pending );
@@ -878,7 +885,7 @@ static void do_read_failures(struct mirror_sync_set *ms, struct bio_list *read_f
 	while ((bio = bio_list_pop(read_failures))) {
 
 		DMSDEBUG("do_read_failures() GOT BIO...\n");
-		rw = bio_rw(bio);
+		rw = bio_data_dir(bio);
 
 		/* NOTE: we re-use the already allocated bmi, that was saved in the bio struct... */
 		bmi = bio_pop_m_priv(bio);
@@ -891,7 +898,8 @@ static void do_read_failures(struct mirror_sync_set *ms, struct bio_list *read_f
 		} else {
 			/* BUG ALERT: NULL bmi pointer! cannot continue, failing I/O */
 			DMERR("[%s] do_read_failures(): NULL bmi pointer, failing I/O read", ms->name);
-			bio_endio(bio, -EFAULT);
+			bio->bi_error = -EFAULT;
+			bio_endio(bio);
 			continue;
 		}
 
@@ -931,7 +939,8 @@ static void do_read_failures(struct mirror_sync_set *ms, struct bio_list *read_f
 				atomic_inc( &ms->supress_err_messages );
 			}
 
-			bio_endio(bio, -EIO);
+			bio->bi_error = -EIO;
+			bio_endio(bio);
 			DMSDEBUG("do_read_failures(): bio_endio(bio) DONE\n");
 		}
 	}
@@ -990,12 +999,6 @@ static void mirror_sync_resume(struct dm_target *ti)
 /*----------------------------------------------------------------- */
 
 #ifdef ENABLE_CHECK_MIRROR_CMDS
-static void
-bi_complete(struct bio *bio, int error)
-{
-	complete((struct completion*)bio->bi_private);
-}
-
 /* Do a synchronous I/O operation on a block device
  * NOTE: this initiates a new I/O operation here, not one forwarded from higher system layers */
 
@@ -1004,7 +1007,6 @@ dms_sync_block_io(struct block_device *bdev, unsigned long long baddr_bytes,
 							unsigned long bsize, struct page **pages, int rw)
 {
 	struct bio *bio = bio_alloc(GFP_NOIO, 1);
-	struct completion event;
 	int i, ret, npages = bsize / PAGE_SIZE;
 
 	if (!bio) {
@@ -1013,7 +1015,7 @@ dms_sync_block_io(struct block_device *bdev, unsigned long long baddr_bytes,
 	}
 
 	assert_return((baddr_bytes % 512 == 0 && baddr_bytes % PAGE_SIZE == 0), 0);
-	bio->bi_rw = READ | REQ_SYNC;
+	bio_set_op_attrs(bio, REQ_OP_READ, 0 /*op_flags*/);
 	bio->bi_vcnt = 0;
 	bio->bi_iter.bi_idx = 0;
 	bio->bi_phys_segments = 0;
@@ -1029,13 +1031,10 @@ dms_sync_block_io(struct block_device *bdev, unsigned long long baddr_bytes,
 		}
 		//DMSDEBUG_CALL("Added page buf: %d page: %p bap: %d!\n", i, pages[i], bap );
 	}
-	init_completion(&event);
-	bio->bi_private = &event;
-	bio->bi_end_io = bi_complete;
-	generic_make_request(bio);
-	wait_for_completion(&event);
 
-	ret = test_bit(BIO_UPTODATE, &bio->bi_flags);
+	submit_bio_wait(bio);
+
+	ret = !bio->bi_error;
 	bio_put(bio);
 	return ret;
 }
@@ -2245,7 +2244,8 @@ static int mirror_sync_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	ti->num_flush_bios = 1;
 	ti->num_discard_bios = 1;
 	/* CAUTION: need the following for dm_per_bio_data()! */
-	ti->per_bio_data_size = sizeof(struct dms_bio_map_info); // Linux-3.x specific
+	ti->per_io_data_size = sizeof(struct dms_bio_map_info);
+
 	ti->discard_zeroes_data_unsupported = true;
 
 	/* CAUTION: dm_table_get_md() code has changed since 2.6.18! no dm_put() needed after it! */
